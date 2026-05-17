@@ -147,8 +147,55 @@
     inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: cover;
+    object-fit: contain;
     background: #000;
+  }
+  .preview-area.fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    height: 100vh;
+    background: #000;
+    border-radius: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .preview-area.fullscreen .preview-canvas {
+    width: 100%;
+    height: 100%;
+  }
+  .preview-area.fullscreen .preview-scene {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+  .scene-timecode {
+    position: absolute; top: 8px; right: 8px;
+    background: rgba(0,0,0,0.6); border-radius: 4px; padding: 2px 6px;
+    font-size: 10px; color: var(--accent); font-family: 'SF Mono', monospace;
+    z-index: 10;
+  }
+  .fullscreen-close {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
+    color: #fff;
+    font-size: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 11;
+    transition: background 0.15s;
+  }
+  .fullscreen-close:active {
+    background: rgba(255,255,255,0.2);
   }
   .timeline-ruler {
     cursor: pointer;
@@ -445,7 +492,7 @@
     <div class="preview-area">
       <div class="preview-canvas">
         <div class="preview-scene" id="previewScene">
-          <div class="scene-timecode" id="timecode">00:00:04:12</div>
+          <div class="scene-timecode" id="timecode">00:00:00:00</div>
           <div class="scene-title-overlay">📍 دبي — مارينا ووك • المشهد الأول</div>
         </div>
       </div>
@@ -454,17 +501,18 @@
     <div class="preview-controls">
       <div class="transport-btns">
         <div class="tbtn">⏮</div>
-        <div class="tbtn">⏪</div>
+        <div class="tbtn" onclick="seekSeconds(-5)">⏪</div>
         <div class="tbtn play" id="playBtn" onclick="togglePlay()">▶</div>
-        <div class="tbtn">⏩</div>
+        <div class="tbtn" onclick="seekSeconds(5)">⏩</div>
         <div class="tbtn">⏭</div>
       </div>
-      <div class="timecode-disp" id="tcDisp">00:00:04:12</div>
+      <div class="timecode-disp" id="tcDisp">00:00:00:00</div>
       <div class="quality-badge">1080p • بروكسي</div>
+      <div class="tbtn" id="fullscreenBtn" onclick="toggleFullscreen()">⛶</div>
     </div>
 
     <div class="timeline-area">
-      <div class="timeline-ruler" id="timelineRuler" style="position:relative;">
+      <div class="timeline-ruler" id="timelineRuler" style="position:relative; cursor: pointer;">
         <div class="ruler-marks">
           <div class="ruler-mark">0s</div>
           <div class="ruler-mark">2s</div>
@@ -477,8 +525,8 @@
         </div>
         <div class="trim-marker trim-start" id="trimStartMarker" title="Trim start"></div>
         <div class="trim-marker trim-end" id="trimEndMarker" title="Trim end"></div>
-        <div class="playhead-line" id="playheadLine"></div>
-        <div class="playhead-handle" id="playheadHandle" title="Drag to seek"></div>
+        <div class="playhead-line" id="playheadLine" style="left: 0;"></div>
+        <div class="playhead-handle" id="playheadHandle" style="left: 0;" title="Drag to seek"></div>
       </div>
 
       <div class="track-row">
@@ -705,13 +753,16 @@
 <script>
 let history = ['home'];
 let isPlaying = false;
-let frame = 4 * 30 + 12;
-let playInterval = null;
-let playheadPct = 28;
+let frame = 0;
+let rafId = null;
+let playheadPct = 0;
 let isSeeking = false;
 let wasPlayingBeforeSeek = false;
 let currentVideo = null;
 let currentVideoUrl = null;
+let currentDuration = 0;
+let currentTime = 0;
+let isFullscreen = false;
 const timelineMaxSeconds = 14;
 
 function showScreen(name) {
@@ -760,8 +811,9 @@ function loadSelectedVideo(file) {
   }
 
   currentVideoUrl = URL.createObjectURL(file);
+  
   previewScene.innerHTML = `
-    <video id="previewVideo" playsinline webkit-playsinline muted></video>
+    <video id="previewVideo" playsinline webkit-playsinline muted style="width:100%; height:100%; object-fit:contain;"></video>
     <div class="scene-timecode" id="timecode">00:00:00:00</div>
     <div class="scene-title-overlay">📍 فيديو مختار • معاينة المشروع</div>
   `;
@@ -773,8 +825,25 @@ function loadSelectedVideo(file) {
   video.preload = 'metadata';
 
   video.addEventListener('loadedmetadata', () => {
+    currentDuration = video.duration || 0;
+    currentTime = 0;
+    frame = 0;
     updateTimecodeFromVideo(video);
     showScreen('editor');
+  });
+
+  video.addEventListener('play', () => {
+    isPlaying = true;
+    const btn = document.getElementById('playBtn');
+    if (btn) btn.textContent = '⏸';
+    startPlayInterval(video);
+  });
+
+  video.addEventListener('pause', () => {
+    isPlaying = false;
+    const btn = document.getElementById('playBtn');
+    if (btn) btn.textContent = '▶';
+    clearPlayInterval();
   });
 
   video.addEventListener('timeupdate', () => updateTimecodeFromVideo(video));
@@ -793,30 +862,58 @@ function togglePlay() {
 
   if (video.paused || video.ended) {
     video.play().catch(() => {});
-    isPlaying = true;
-    const btn = document.getElementById('playBtn');
-    if (btn) btn.textContent = '⏸';
-    startPlayInterval(video);
   } else {
     video.pause();
-    isPlaying = false;
-    const btn = document.getElementById('playBtn');
-    if (btn) btn.textContent = '▶';
-    clearPlayInterval();
   }
 }
 
 function startPlayInterval(video) {
   clearPlayInterval();
-  playInterval = setInterval(() => {
+  rafId = requestAnimationFrame(function playbackFrame() {
+    if (!video || video.paused || isSeeking) {
+      rafId = null;
+      return;
+    }
     updateTimecodeFromVideo(video);
-  }, 100);
+    rafId = requestAnimationFrame(playbackFrame);
+  });
 }
 
 function clearPlayInterval() {
-  if (playInterval) {
-    clearInterval(playInterval);
-    playInterval = null;
+  if (rafId) {
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
+}
+
+function seekSeconds(delta) {
+  if (!currentVideo || !currentVideo.duration) return;
+  currentVideo.currentTime = Math.min(Math.max(0, currentVideo.currentTime + delta), currentVideo.duration);
+  updateTimecodeFromVideo(currentVideo);
+}
+
+function toggleFullscreen() {
+  const previewArea = document.querySelector('.preview-area');
+  const previewScene = document.getElementById('previewScene');
+  if (!previewArea || !previewScene) return;
+  
+  isFullscreen = !isFullscreen;
+  previewArea.classList.toggle('fullscreen', isFullscreen);
+  
+  const fullscreenBtn = document.getElementById('fullscreenBtn');
+  if (fullscreenBtn) {
+    fullscreenBtn.textContent = isFullscreen ? '✕' : '⛶';
+  }
+  
+  if (isFullscreen) {
+    const closeBtn = document.createElement('div');
+    closeBtn.className = 'fullscreen-close';
+    closeBtn.textContent = '✕';
+    closeBtn.onclick = toggleFullscreen;
+    previewScene.appendChild(closeBtn);
+  } else {
+    const closeBtn = previewScene.querySelector('.fullscreen-close');
+    if (closeBtn) closeBtn.remove();
   }
 }
 
@@ -875,15 +972,23 @@ function setupTimelineControls() {
     document.addEventListener('pointerup', onTimelinePointerUp);
     document.addEventListener('pointercancel', onTimelinePointerUp);
   });
+
+  ruler.addEventListener('click', event => {
+    if (!currentVideo || !currentVideo.duration) return;
+    event.preventDefault();
+    const percent = getTimelinePercent(event.clientX);
+    seekVideoToPercent(percent);
+  });
 }
 
 function updateTimecodeFromVideo(video) {
   if (!video) return;
-  const currentTime = Math.max(0, Math.min(video.currentTime, video.duration || 0));
-  const totalFrames = Math.round(currentTime * 30);
+  const currentTimeValue = Math.m video.duration || 0));
+  currentTime = currentTimeValue; // ADDED: sync shared time state
+  const totalFrames = Math.round(currentTimeValue * 30);
   frame = totalFrames;
 
-  const totalSec = Math.floor(currentTime);
+  const totalSec = Math.floor(currentTimeValue);
   const f = totalFrames % 30;
   const s = totalSec % 60;
   const m = Math.floor(totalSec / 60) % 60;
