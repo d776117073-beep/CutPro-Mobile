@@ -1,3 +1,4 @@
+
 <style>
   :root {
     --bg0: #0a0a0c;
@@ -141,6 +142,63 @@
     background: linear-gradient(135deg, #1a2740 0%, #2d1b3d 50%, #1a3326 100%);
     position: relative; overflow: hidden;
   }
+  .preview-scene video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #000;
+  }
+  .timeline-ruler {
+    cursor: pointer;
+    position: relative;
+    min-height: 52px;
+    padding: 10px 0;
+  }
+  .timeline-ruler::before {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; top: 50%;
+    height: 2px;
+    background: rgba(255,255,255,0.08);
+    transform: translateY(-50%);
+  }
+  .playhead-line {
+    position: absolute;
+    top: 0; bottom: 0;
+    width: 2px;
+    background: var(--accent);
+    z-index: 3;
+    transition: left 0.04s linear;
+    pointer-events: none;
+  }
+  .playhead-handle {
+    position: absolute;
+    top: 50%;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid rgba(0,0,0,0.25);
+    transform: translate(-50%, -50%);
+    z-index: 4;
+    cursor: grab;
+    touch-action: none;
+  }
+  .playhead-handle:active { cursor: grabbing; }
+  .trim-marker {
+    position: absolute;
+    top: 10px;
+    width: 2px;
+    height: 32px;
+    background: rgba(245,166,35,0.9);
+    border-radius: 2px;
+    z-index: 2;
+    pointer-events: none;
+  }
+  .trim-start { left: 6%; }
+  .trim-end { left: 86%; }
   .scene-title-overlay {
     position: absolute; bottom: 0; left: 0; right: 0;
     background: linear-gradient(transparent, rgba(0,0,0,0.8));
@@ -344,6 +402,7 @@
 </style>
 
 <div id="app">
+  <input type="file" id="video-picker" accept="video/*" style="display: none;">
   <div id="screen-home" class="screen active">
     <div class="home-hero">
       <div class="logo-glow">
@@ -361,7 +420,7 @@
         <div class="pill"><span class="dot teal"></span>تصدير 4K</div>
         <div class="pill"><span class="dot"></span>بروكسي ذكي</div>
       </div>
-      <button class="btn-primary" onclick="showScreen('editor')">▶ ابدأ مشروع جديد</button>
+      <button class="btn-primary" onclick="pickVideo()">▶ ابدأ مشروع جديد</button>
       <button class="btn-secondary" onclick="showScreen('features')">🔍 استكشف الميزات</button>
     </div>
     <div class="stats-bar">
@@ -405,7 +464,7 @@
     </div>
 
     <div class="timeline-area">
-      <div class="timeline-ruler" style="position:relative;">
+      <div class="timeline-ruler" id="timelineRuler" style="position:relative;">
         <div class="ruler-marks">
           <div class="ruler-mark">0s</div>
           <div class="ruler-mark">2s</div>
@@ -416,7 +475,10 @@
           <div class="ruler-mark">12s</div>
           <div class="ruler-mark">14s</div>
         </div>
+        <div class="trim-marker trim-start" id="trimStartMarker" title="Trim start"></div>
+        <div class="trim-marker trim-end" id="trimEndMarker" title="Trim end"></div>
         <div class="playhead-line" id="playheadLine"></div>
+        <div class="playhead-handle" id="playheadHandle" title="Drag to seek"></div>
       </div>
 
       <div class="track-row">
@@ -646,6 +708,11 @@ let isPlaying = false;
 let frame = 4 * 30 + 12;
 let playInterval = null;
 let playheadPct = 28;
+let isSeeking = false;
+let wasPlayingBeforeSeek = false;
+let currentVideo = null;
+let currentVideoUrl = null;
+const timelineMaxSeconds = 14;
 
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -665,25 +732,183 @@ function setTab(el) {
   el.classList.add('active');
 }
 
+function pickVideo() {
+  const picker = document.getElementById('video-picker');
+  if (picker) picker.click();
+}
+
+document.getElementById('video-picker').addEventListener('change', event => {
+  const file = event.target.files && event.target.files[0];
+  if (!file || !file.type.startsWith('video/')) return;
+  loadSelectedVideo(file);
+  event.target.value = '';
+});
+
+function loadSelectedVideo(file) {
+  const previewScene = document.getElementById('previewScene');
+  if (!previewScene) return;
+
+  if (currentVideo) {
+    currentVideo.pause();
+    currentVideo.src = '';
+    currentVideo.load();
+    currentVideo = null;
+  }
+  if (currentVideoUrl) {
+    URL.revokeObjectURL(currentVideoUrl);
+    currentVideoUrl = null;
+  }
+
+  currentVideoUrl = URL.createObjectURL(file);
+  previewScene.innerHTML = `
+    <video id="previewVideo" playsinline webkit-playsinline muted></video>
+    <div class="scene-timecode" id="timecode">00:00:00:00</div>
+    <div class="scene-title-overlay">📍 فيديو مختار • معاينة المشروع</div>
+  `;
+
+  const video = document.getElementById('previewVideo');
+  if (!video) return;
+  currentVideo = video;
+  video.src = currentVideoUrl;
+  video.preload = 'metadata';
+
+  video.addEventListener('loadedmetadata', () => {
+    updateTimecodeFromVideo(video);
+    showScreen('editor');
+  });
+
+  video.addEventListener('timeupdate', () => updateTimecodeFromVideo(video));
+  video.addEventListener('ended', () => {
+    isPlaying = false;
+    const btn = document.getElementById('playBtn');
+    if (btn) btn.textContent = '▶';
+    clearPlayInterval();
+    updateTimecodeFromVideo(video);
+  });
+}
+
 function togglePlay() {
-  isPlaying = !isPlaying;
-  const btn = document.getElementById('playBtn');
-  btn.textContent = isPlaying ? '⏸' : '▶';
-  if (isPlaying) {
-    playInterval = setInterval(() => {
-      frame++;
-      if (frame > 14 * 30) frame = 0;
-      updateTimecode();
-      playheadPct = (frame / (14 * 30)) * 100;
-      const pl = document.getElementById('playheadLine');
-      if (pl) pl.style.left = Math.min(playheadPct, 99) + '%';
-    }, 33);
+  const video = document.getElementById('previewVideo');
+  if (!video) return;
+
+  if (video.paused || video.ended) {
+    video.play().catch(() => {});
+    isPlaying = true;
+    const btn = document.getElementById('playBtn');
+    if (btn) btn.textContent = '⏸';
+    startPlayInterval(video);
   } else {
-    clearInterval(playInterval);
+    video.pause();
+    isPlaying = false;
+    const btn = document.getElementById('playBtn');
+    if (btn) btn.textContent = '▶';
+    clearPlayInterval();
   }
 }
 
+function startPlayInterval(video) {
+  clearPlayInterval();
+  playInterval = setInterval(() => {
+    updateTimecodeFromVideo(video);
+  }, 100);
+}
+
+function clearPlayInterval() {
+  if (playInterval) {
+    clearInterval(playInterval);
+    playInterval = null;
+  }
+}
+
+function getTimelinePercent(clientX) {
+  const ruler = document.getElementById('timelineRuler');
+  if (!ruler) return 0;
+  const rect = ruler.getBoundingClientRect();
+  const offset = Math.min(Math.max(0, clientX - rect.left), rect.width);
+  return rect.width ? offset / rect.width : 0;
+}
+
+function seekVideoToPercent(percent) {
+  if (!currentVideo || !currentVideo.duration) return;
+  const clamped = Math.min(Math.max(0, percent), 1);
+  currentVideo.currentTime = clamped * currentVideo.duration;
+  updateTimecodeFromVideo(currentVideo);
+}
+
+function onTimelinePointerMove(event) {
+  if (!isSeeking) return;
+  event.preventDefault();
+  const percent = getTimelinePercent(event.clientX);
+  seekVideoToPercent(percent);
+}
+
+function onTimelinePointerUp() {
+  if (!isSeeking) return;
+  isSeeking = false;
+  document.removeEventListener('pointermove', onTimelinePointerMove);
+  document.removeEventListener('pointerup', onTimelinePointerUp);
+  document.removeEventListener('pointercancel', onTimelinePointerUp);
+  if (wasPlayingBeforeSeek && currentVideo) {
+    currentVideo.play().catch(() => {});
+    startPlayInterval(currentVideo);
+    wasPlayingBeforeSeek = false;
+  }
+}
+
+function setupTimelineControls() {
+  const ruler = document.getElementById('timelineRuler');
+  if (!ruler) return;
+
+  ruler.addEventListener('pointerdown', event => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if (!currentVideo || !currentVideo.duration) return;
+    event.preventDefault();
+    const percent = getTimelinePercent(event.clientX);
+    isSeeking = true;
+    wasPlayingBeforeSeek = !currentVideo.paused;
+    if (wasPlayingBeforeSeek) {
+      currentVideo.pause();
+      clearPlayInterval();
+    }
+    seekVideoToPercent(percent);
+    document.addEventListener('pointermove', onTimelinePointerMove);
+    document.addEventListener('pointerup', onTimelinePointerUp);
+    document.addEventListener('pointercancel', onTimelinePointerUp);
+  });
+}
+
+function updateTimecodeFromVideo(video) {
+  if (!video) return;
+  const currentTime = Math.max(0, Math.min(video.currentTime, video.duration || 0));
+  const totalFrames = Math.round(currentTime * 30);
+  frame = totalFrames;
+
+  const totalSec = Math.floor(currentTime);
+  const f = totalFrames % 30;
+  const s = totalSec % 60;
+  const m = Math.floor(totalSec / 60) % 60;
+  const h = Math.floor(totalSec / 3600);
+  const tc = `${pad(h)}:${pad(m)}:${pad(s)}:${pad(f)}`;
+
+  const d1 = document.getElementById('timecode');
+  const d2 = document.getElementById('tcDisp');
+  if (d1) d1.textContent = tc;
+  if (d2) d2.textContent = tc;
+
+  playheadPct = video.duration ? (currentTime / Math.max(video.duration, timelineMaxSeconds)) * 100 : (currentTime / timelineMaxSeconds) * 100;
+  const pl = document.getElementById('playheadLine');
+  if (pl) pl.style.left = Math.min(playheadPct, 99) + '%';
+  const ph = document.getElementById('playheadHandle');
+  if (ph) ph.style.left = Math.min(playheadPct, 99) + '%';
+}
+
 function updateTimecode() {
+  if (currentVideo) {
+    updateTimecodeFromVideo(currentVideo);
+    return;
+  }
+  frame++;
+  if (frame > 14 * 30) frame = 0;
   const totalSec = Math.floor(frame / 30);
   const f = frame % 30;
   const s = totalSec % 60;
@@ -713,4 +938,5 @@ function buildWaveform(id) {
 
 buildWaveform('waveformCont');
 buildWaveform('waveformCont2');
+setupTimelineControls();
 </script>
